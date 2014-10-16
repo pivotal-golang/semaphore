@@ -1,4 +1,4 @@
-package semaphore_test
+package semaphore
 
 import (
 	. "github.com/onsi/ginkgo"

@@ -40,16 +40,23 @@ func New(maxInflight, maxPending int) Semaphore {
 }
 
 func (s *semaphore) Acquire() (Resource, error) {
+	return s.testableAcquire(func() {})
+}
+
+func (s *semaphore) testableAcquire(beforeScheduleLock func()) (Resource, error) {
 	var newRequest request = make(chan struct{})
+
 	select {
 	case s.pendingRequests <- newRequest:
 	default:
 		return nil, errors.New(fmt.Sprintf("Cannot queue request, maxPending reached: %d", s.maxPending))
 	}
 
+	beforeScheduleLock()
+
 	select {
 	case s.schedulerLock <- struct{}{}:
-	case <-newRequest:
+	case <-newRequest: // Prevent deadlock when request is scheduled by concurrect call
 		return &resource{inflightRequests: s.inflightRequests}, nil
 	}
 
