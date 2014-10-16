@@ -69,13 +69,21 @@ func (s *semaphore) Acquire() (Resource, error) {
 }
 
 func (r *resource) Release() error {
+	err := r.markReleased()
+	if err != nil {
+		return err
+	}
+
+	<-r.inflightRequests
+	return nil
+}
+
+func (r *resource) markReleased() error {
 	r.Lock()
+	defer r.Unlock()
 	if r.released {
 		return errors.New("Resource has already been released")
 	}
 	r.released = true
-	r.Unlock()
-
-	<-r.inflightRequests
 	return nil
 }
