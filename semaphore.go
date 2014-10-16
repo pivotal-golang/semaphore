@@ -58,11 +58,11 @@ func (s *semaphore) Acquire() (Resource, error) {
 	}()
 
 	for {
-		nextRequest := <-s.pendingRequests
-		s.inflightRequests <- nextRequest
-		close(nextRequest)
-
-		if nextRequest == newRequest {
+		select {
+		case nextRequest := <-s.pendingRequests:
+			s.inflightRequests <- nextRequest
+			close(nextRequest)
+		case <-newRequest:
 			return &resource{inflightRequests: s.inflightRequests}, nil
 		}
 	}
