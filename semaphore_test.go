@@ -1,25 +1,18 @@
 package semaphore_test
 
 import (
-	"os"
+	"errors"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/pivotal-golang/semaphore"
-	"github.com/tedsuo/ifrit"
 )
 
 var _ = Describe("Semaphore", func() {
 	var semaphore Semaphore
-	var semaphoreProcess ifrit.Process
 
 	BeforeEach(func() {
 		semaphore = New(1, 2)
-		semaphoreProcess = ifrit.Invoke(semaphore)
-	})
-
-	AfterEach(func() {
-		semaphoreProcess.Signal(os.Kill)
 	})
 
 	Context("when maxInFlight has not yet been reached", func() {
@@ -94,19 +87,39 @@ var _ = Describe("Semaphore", func() {
 			})
 		})
 
-		Context("when maxPanding is reached", func() {
-			BeforeEach(func() {
-				go semaphore.Acquire()
-				go semaphore.Acquire()
-			})
-
+		Context("when maxPending is reached", func() {
 			It("returns an error trying to acquire", func(done Done) {
 				defer close(done)
 
-				_, err := semaphore.Acquire()
+				errChan := make(chan error)
+				for i := 0; i < 4; i++ {
+					semaphore := semaphore
+					go func() {
+						_, err := semaphore.Acquire()
+						errChan <- err
+					}()
+				}
+
+				var err error
+				Eventually(errChan).Should(Receive(&err))
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(Equal("Cannot queue request, maxPending reached: 2"))
 			})
+		})
+	})
+
+	Context("when trying to release twice", func() {
+		It("returns an error", func(done Done) {
+			defer close(done)
+
+			resource, err := semaphore.Acquire()
+			Expect(err).ToNot(HaveOccurred())
+
+			err = resource.Release()
+			Expect(err).ToNot(HaveOccurred())
+
+			err = resource.Release()
+			Expect(err).To(Equal(errors.New("Resource has already been released")))
 		})
 	})
 })

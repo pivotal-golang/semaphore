@@ -3,18 +3,14 @@ package semaphore
 import (
 	"errors"
 	"fmt"
-	"os"
-
-	"github.com/tedsuo/ifrit"
+	"sync"
 )
 
 type Resource interface {
-	Release()
+	Release() error
 }
 
 type Semaphore interface {
-	ifrit.Runner
-
 	Acquire() (Resource, error)
 }
 
@@ -22,12 +18,16 @@ type request chan struct{}
 
 type resource struct {
 	inflightRequests chan request
+	sync.Mutex
+	released bool
 }
 
 type semaphore struct {
 	inflightRequests chan request
 	pendingRequests  chan request
 	maxPending       int
+
+	schedulerLock chan struct{}
 }
 
 func New(maxInflight, maxPending int) Semaphore {
@@ -35,44 +35,47 @@ func New(maxInflight, maxPending int) Semaphore {
 		inflightRequests: make(chan request, maxInflight),
 		pendingRequests:  make(chan request, maxPending),
 		maxPending:       maxPending,
+		schedulerLock:    make(chan struct{}, 1),
 	}
 }
 
-func (os *semaphore) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
-	var pendingRequest request
+func (s *semaphore) Acquire() (Resource, error) {
+	var newRequest request = make(chan struct{})
+	select {
+	case s.pendingRequests <- newRequest:
+	default:
+		return nil, errors.New(fmt.Sprintf("Cannot queue request, maxPending reached: %d", s.maxPending))
+	}
 
-	close(ready)
+	select {
+	case s.schedulerLock <- struct{}{}:
+	case <-newRequest:
+		return &resource{inflightRequests: s.inflightRequests}, nil
+	}
+
+	defer func() {
+		<-s.schedulerLock
+	}()
 
 	for {
-		select {
-		case pendingRequest = <-os.pendingRequests:
-		case <-signals:
-			return nil
-		}
+		nextRequest := <-s.pendingRequests
+		s.inflightRequests <- nextRequest
+		close(nextRequest)
 
-		select {
-		case os.inflightRequests <- pendingRequest:
-			close(pendingRequest)
-		case <-signals:
-			return nil
+		if nextRequest == newRequest {
+			return &resource{inflightRequests: s.inflightRequests}, nil
 		}
 	}
-
-	return nil
 }
-func (os *semaphore) Acquire() (Resource, error) {
-	var pendingRequest request = make(chan struct{})
-	select {
-	case os.pendingRequests <- pendingRequest:
-	default:
-		return nil, errors.New(fmt.Sprintf("Cannot queue request, maxPending reached: %d", os.maxPending))
+
+func (r *resource) Release() error {
+	r.Lock()
+	if r.released {
+		return errors.New("Resource has already been released")
 	}
+	r.released = true
+	r.Unlock()
 
-	<-pendingRequest
-
-	return &resource{os.inflightRequests}, nil
-}
-
-func (r *resource) Release() {
 	<-r.inflightRequests
+	return nil
 }
